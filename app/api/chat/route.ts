@@ -33,18 +33,18 @@ export async function POST(req: Request) {
   const completionProperties = {
     model: 'gpt-3.5-turbo',
     messages,
-    temperature: 0.7,
+    temperature: 0.5,
   }
   const res = await openai.createChatCompletion({
     ...completionProperties,
     stream: true
   })
 
-  const traceId = await createTracer("ai.request", completionProperties)
+  const { traceId } = await sendEvent("ai.request", completionProperties)
 
   const stream = OpenAIStream(res, {
     async onCompletion(completion) {
-      await sendEvent("ai.stream.completion", { completion }, traceId)
+      await sendEvent("ai.chat.completion", { completion }, traceId)
       const title = json.messages[0].content.substring(0, 100)
       const id = json.id ?? nanoid()
       const createdAt = Date.now()
@@ -70,14 +70,14 @@ export async function POST(req: Request) {
       })
     },
     async onStart(){
-      await sendEvent("ai.stream.start", {  }, traceId)
+      await sendEvent("ai.chat.start", {  }, traceId)
     }
   })
 
   return new StreamingTextResponse(stream)
 }
 
-const createTracer = async(message: string, properties: object)=>{
+const sendEvent = async (message: string, properties: object, traceId?: string)=>{
   try {
     const res = await fetch('https://ingest-event.autoblocks.ai', {
       method: 'POST',
@@ -88,22 +88,24 @@ const createTracer = async(message: string, properties: object)=>{
       body: JSON.stringify({
         message,
         properties,
+        traceId
       }),
     });
-    const data = await res.json()
-    return data.traceId
+    return await res.json();
   } catch {
-    console.log("Failed to create tracer.")
-    return ""
+    console.log("Failed to send event to Autoblocks.")
+    return null 
   }
 }
-const sendEvent = async (message: string, properties: object, traceId: string)=>{
+
+const sendSimulationEvent = async (message: string, properties: object, traceId?: string)=>{
   try {
     const res = await fetch('https://ingest-event.autoblocks.ai', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.AUTOBLOCKS_INGESTION_KEY || ''}`,
+        'X-Autoblocks-Simulation-RunId': `${process.env.AUTOBLOCKS_SIMULATION_ID}`
       },
       body: JSON.stringify({
         message,
