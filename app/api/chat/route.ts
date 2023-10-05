@@ -1,12 +1,12 @@
 import { kv } from '@vercel/kv'
 import { OpenAIStream, StreamingTextResponse } from 'ai'
 import { Configuration, OpenAIApi } from 'openai-edge'
+import crypto from 'crypto';
+import { AutoblocksTracer } from '@autoblocks/client';
 
 
 import { auth } from '@/auth'
 import { nanoid } from '@/lib/utils'
-
-export const runtime = 'edge'
 
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY
@@ -14,12 +14,11 @@ const configuration = new Configuration({
 
 const openai = new OpenAIApi(configuration)
 
-
 export async function POST(req: Request) {
   const json = await req.json()
+  
   const { messages, previewToken } = json
   const userId = (await auth())?.user.id
-
   if (!userId) {
     return new Response('Unauthorized', {
       status: 401
@@ -30,21 +29,61 @@ export async function POST(req: Request) {
     configuration.apiKey = previewToken
   }
 
+  // Traces
+  const tracer = new AutoblocksTracer(
+    process.env.AUTOBLOCKS_INGESTION_KEY || "", 
+    { 
+      traceId: crypto.randomUUID(),
+      properties: {
+        app: 'AI Chatbot',
+        provider: 'openai'
+      }
+    }
+  );
+
+  // Simulation
+  // const tracer = new AutoblocksTracer(
+  //   process.env.AUTOBLOCKS_INGESTION_KEY || "", 
+  //   { 
+  //     traceId: "ai-chatbot-math",
+  //     properties: {
+  //       app: 'AI Chatbot',
+  //       provider: 'openai'
+  //     }
+  //   }
+  // );
+
+
+
+  const systemMessage = {
+    role: 'system',
+    //content: ''
+    //content: 'You are a math professor. Your goal is to answer math questions.'
+    content: 'You are a math professor. Your goal is to answer math questions with as much precision and detail as possible. Use your extension mathematical experience to provide thorough, correct, and useful answers. Include proofs, equations, formulas, and any other mathematical tools as necessary. Break answers down into logical, easy to follow steps. Assume the user has only a basic understanding of math concepts.'
+  }
+
   const completionProperties = {
     model: 'gpt-3.5-turbo',
-    messages,
-    temperature: 0.5,
+    messages: [systemMessage, ...messages],
+    temperature: 0.75,
   }
+
   const res = await openai.createChatCompletion({
     ...completionProperties,
     stream: true
   })
 
-  const { traceId } = await sendEvent("ai.request", completionProperties)
+  await tracer.sendEvent('ai.request', {
+    properties: completionProperties,
+  });
 
   const stream = OpenAIStream(res, {
     async onCompletion(completion) {
-      await sendEvent("ai.chat.completion", { completion }, traceId)
+      await tracer.sendEvent("ai.stream.completion", {
+        properties: {
+          completion
+        }
+      })
       const title = json.messages[0].content.substring(0, 100)
       const id = json.id ?? nanoid()
       const createdAt = Date.now()
@@ -70,52 +109,9 @@ export async function POST(req: Request) {
       })
     },
     async onStart(){
-      await sendEvent("ai.chat.start", {  }, traceId)
+      await tracer.sendEvent("ai.stream.start", {properties: {}})
     }
   })
 
   return new StreamingTextResponse(stream)
-}
-
-const sendEvent = async (message: string, properties: object, traceId?: string)=>{
-  try {
-    const res = await fetch('https://ingest-event.autoblocks.ai', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.AUTOBLOCKS_INGESTION_KEY || ''}`,
-      },
-      body: JSON.stringify({
-        message,
-        properties,
-        traceId
-      }),
-    });
-    return await res.json();
-  } catch {
-    console.log("Failed to send event to Autoblocks.")
-    return null 
-  }
-}
-
-const sendSimulationEvent = async (message: string, properties: object, traceId?: string)=>{
-  try {
-    const res = await fetch('https://ingest-event.autoblocks.ai', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.AUTOBLOCKS_INGESTION_KEY || ''}`,
-        'X-Autoblocks-Simulation-RunId': `${process.env.AUTOBLOCKS_SIMULATION_ID}`
-      },
-      body: JSON.stringify({
-        message,
-        properties,
-        traceId
-      }),
-    });
-    return await res.json();
-  } catch {
-    console.log("Failed to send event to Autoblocks.")
-    return null 
-  }
 }
