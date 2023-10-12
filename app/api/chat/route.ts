@@ -7,6 +7,7 @@ import { AutoblocksTracer } from '@autoblocks/client';
 
 import { auth } from '@/auth'
 import { nanoid } from '@/lib/utils'
+import { request } from 'http';
 
 const configuration = new Configuration({
   apiKey: process.env.OPENAI_API_KEY
@@ -15,6 +16,8 @@ const configuration = new Configuration({
 const openai = new OpenAIApi(configuration)
 
 export async function POST(req: Request) {
+  const requestStart = Date.now();
+
   const json = await req.json()
   
   const { messages, previewToken } = json
@@ -29,6 +32,7 @@ export async function POST(req: Request) {
     configuration.apiKey = previewToken
   }
 
+  //console.log(process.env.AUTOBLOCKS_INGESTION_KEY)
   // Traces
   const tracer = new AutoblocksTracer(
     process.env.AUTOBLOCKS_INGESTION_KEY || "", 
@@ -45,7 +49,7 @@ export async function POST(req: Request) {
   // const tracer = new AutoblocksTracer(
   //   process.env.AUTOBLOCKS_INGESTION_KEY || "", 
   //   { 
-  //     traceId: "ai-chatbot-math",
+  //     traceId:   //   process.env.SQUARE_ROOT_TWO_TRACE_ID,
   //     properties: {
   //       app: 'AI Chatbot',
   //       provider: 'openai'
@@ -65,12 +69,12 @@ export async function POST(req: Request) {
   const completionProperties = {
     model: 'gpt-3.5-turbo',
     messages: [systemMessage, ...messages],
-    temperature: 0.75,
+    temperature: 0.1,
+    stream: true
   }
 
   const res = await openai.createChatCompletion({
     ...completionProperties,
-    stream: true
   })
 
   await tracer.sendEvent('ai.request', {
@@ -81,7 +85,8 @@ export async function POST(req: Request) {
     async onCompletion(completion) {
       await tracer.sendEvent("ai.stream.completion", {
         properties: {
-          completion
+          completion,
+          latency: Date.now() - requestStart
         }
       })
       const title = json.messages[0].content.substring(0, 100)
